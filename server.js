@@ -4,16 +4,18 @@ import { createServer } from 'http'
 import { Server } from 'socket.io'
 
 const app = express()
-app.use(cors())
 const server = createServer(app)
+
+app.use(cors())
 const io = new Server(server, {
   cors: {
     origin: [
+      'https://gossipgrid.netlify.app',
       'http://localhost:5000',
       'http://192.168.1.101:5000',
-      'https://gossipgrid.netlify.app/',
     ],
     methods: ['GET', 'POST'],
+    credentials: true,
   },
 })
 
