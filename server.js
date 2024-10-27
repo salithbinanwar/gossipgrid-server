@@ -6,17 +6,32 @@ import { Server } from 'socket.io'
 const app = express()
 const server = createServer(app)
 
-app.use(cors())
+app.use(
+  cors({
+    origin: [
+      'https://gossipgrid.netlify.app',
+      'http://192.168.1.101:5000',
+      'http://localhost:5000',
+    ],
+    methods: ['GET', 'POST'],
+    credentials: true,
+  }),
+)
+
 const io = new Server(server, {
   cors: {
     origin: [
       'https://gossipgrid.netlify.app',
-      'http://localhost:5000',
       'http://192.168.1.101:5000',
+      'http://localhost:5000',
     ],
     methods: ['GET', 'POST'],
+    allowedHeaders: ['my-custom-header'],
     credentials: true,
+    transports: ['websocket', 'polling'],
   },
+  allowEIO3: true,
+  pingTimeout: 60000,
 })
 
 let activeUsers = 0
