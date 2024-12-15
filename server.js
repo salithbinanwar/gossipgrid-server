@@ -10,8 +10,9 @@ app.use(
   cors({
     origin: [
       'https://gossipgrid.netlify.app',
-      'http://192.168.1.101:5000',
       'http://localhost:5000',
+      'http://192.168.0.153:5000',
+      'http://192.168.56.1:5000',
     ],
     methods: ['GET', 'POST'],
     credentials: true,
@@ -22,8 +23,9 @@ const io = new Server(server, {
   cors: {
     origin: [
       'https://gossipgrid.netlify.app',
-      'http://192.168.1.101:5000',
       'http://localhost:5000',
+      'http://192.168.0.153:5000',
+      'http://192.168.56.1:5000',
     ],
     methods: ['GET', 'POST'],
     allowedHeaders: ['my-custom-header'],
@@ -34,140 +36,121 @@ const io = new Server(server, {
   pingTimeout: 60000,
 })
 
-let activeUsers = 0
-const rooms = new Map() // To track active rooms and their members
-
-function generateRoomId() {
-  return Math.random().toString(36).substring(2, 8)
-}
+// Track active users and their rooms
+let activeUsers = new Set()
+const userRooms = new Map() // To track which users are in which rooms
 
 io.on('connection', (socket) => {
-  activeUsers++
-  io.emit('activePeople', activeUsers)
+  console.log('User connected:', socket.id)
+  activeUsers.add(socket.id)
+
+  // Emit updated active users count to all clients
+  io.emit('activePeople', activeUsers.size)
 
   // Handle messages
   socket.on('clientMessage', (data) => {
-    const messageData = {
-      message: data.message,
-      username: data.username,
-      room: data.room,
-      isRoomMessage: !!data.room,
-      timestamp: new Date().toISOString(),
-    }
-
     if (data.room) {
-      io.to(data.room).emit('message', {
-        ...messageData,
+      socket.to(data.room).emit('message', {
+        message: data.message,
+        username: data.username,
+        room: data.room,
+        timestamp: data.timestamp,
         isRoomMessage: true,
       })
     } else {
       socket.broadcast.emit('message', {
-        ...messageData,
+        message: data.message,
+        username: data.username,
+        timestamp: data.timestamp,
         isRoomMessage: false,
       })
     }
   })
 
-  // Create room
+  // Handle room creation
   socket.on('create_room', (username) => {
     const roomId = generateRoomId()
     socket.join(roomId)
-    rooms.set(roomId, {
-      creator: username,
-      members: [{ username, socketId: socket.id }],
-      created: new Date().toISOString(),
-    })
+    userRooms.set(socket.id, { room: roomId, username })
 
+    // Notify room creation
     socket.emit('room_created', roomId)
-    io.to(roomId).emit('message', {
-      message: `Private room created. Only room members can see messages here.`,
-      username: 'System',
-      room: roomId,
-      isRoomMessage: true,
-      timestamp: new Date().toISOString(),
+    io.to(roomId).emit('room_notification', {
+      type: 'create',
+      username: username,
+      message: `${username} created the room`,
     })
+
+    // Update room members count
+    const roomSize = io.sockets.adapter.rooms.get(roomId)?.size || 0
+    io.to(roomId).emit('room_members', roomSize)
   })
 
-  // Join room
+  // Handle room joining
   socket.on('join_room', ({ room, username }) => {
-    if (room && rooms.has(room)) {
-      socket.join(room)
-      const roomData = rooms.get(room)
-      roomData.members.push({ username, socketId: socket.id })
+    socket.join(room)
+    userRooms.set(socket.id, { room, username })
 
-      socket.emit('room_joined', room)
-      io.to(room).emit('message', {
-        message: `${username} has joined the room`,
-        username: 'System',
-        room: room,
-        isRoomMessage: true,
-        timestamp: new Date().toISOString(),
-      })
-    } else {
-      socket.emit('room_error', 'Room not found')
-    }
-  })
-
-  // Leave room
-  socket.on('leave_room', ({ room, username }) => {
-    if (room && rooms.has(room)) {
-      socket.leave(room)
-      const roomData = rooms.get(room)
-      roomData.members = roomData.members.filter(
-        (member) => member.username !== username,
-      )
-
-      // Send leave message only once to room members
-      io.to(room).emit('message', {
-        message: `${username} has left the room`,
-        username: 'System',
-        room: room,
-        isRoomMessage: true,
-        timestamp: new Date().toISOString(),
-      })
-
-      // Send success response to the leaving user
-      socket.emit('left_room_success')
-
-      // If room is empty, delete it
-      if (roomData.members.length === 0) {
-        rooms.delete(room)
-      }
-    }
-  })
-
-  socket.on('clearChat', ({ room, username }) => {
-    socket.emit('chatCleared', { username })
-  })
-
-  socket.on('disconnect', () => {
-    activeUsers--
-    io.emit('activePeople', activeUsers)
-
-    // Handle room cleanup on disconnect
-    rooms.forEach((roomData, roomId) => {
-      const member = roomData.members.find((m) => m.socketId === socket.id)
-      if (member) {
-        roomData.members = roomData.members.filter(
-          (m) => m.socketId !== socket.id,
-        )
-
-        // Send disconnect message only once
-        io.to(roomId).emit('message', {
-          message: `${member.username} has disconnected`,
-          username: 'System',
-          room: roomId,
-          isRoomMessage: true,
-          timestamp: new Date().toISOString(),
-        })
-
-        if (roomData.members.length === 0) {
-          rooms.delete(roomId)
-        }
-      }
+    // Notify room joining
+    socket.emit('room_joined', room)
+    io.to(room).emit('room_notification', {
+      type: 'join',
+      username: username,
+      message: `${username} joined the room`,
     })
+
+    // Update room members count
+    const roomSize = io.sockets.adapter.rooms.get(room)?.size || 0
+    io.to(room).emit('room_members', roomSize)
+  })
+
+  // Handle room leaving
+  socket.on('leave_room', ({ room, username }) => {
+    socket.leave(room)
+    userRooms.delete(socket.id)
+
+    // Notify room leaving
+    socket.emit('left_room_success')
+    io.to(room).emit('room_notification', {
+      type: 'leave',
+      username: username,
+      message: `${username} left the room`,
+    })
+
+    // Update room members count
+    const roomSize = io.sockets.adapter.rooms.get(room)?.size || 0
+    io.to(room).emit('room_members', roomSize)
+  })
+
+  // Handle disconnection
+  socket.on('disconnect', () => {
+    console.log('User disconnected:', socket.id)
+    activeUsers.delete(socket.id)
+
+    // Handle room cleanup if user was in a room
+    const userRoom = userRooms.get(socket.id)
+    if (userRoom) {
+      const { room, username } = userRoom
+      io.to(room).emit('room_notification', {
+        type: 'leave',
+        username: username,
+        message: `${username} disconnected`,
+      })
+
+      // Update room members count
+      const roomSize = (io.sockets.adapter.rooms.get(room)?.size || 1) - 1
+      io.to(room).emit('room_members', roomSize)
+      userRooms.delete(socket.id)
+    }
+
+    // Update active users count
+    io.emit('activePeople', activeUsers.size)
   })
 })
+
+function generateRoomId() {
+  return Math.random().toString(36).substring(2, 8)
+}
 
 const PORT = process.env.PORT || 3000
 server.listen(PORT, () => {
